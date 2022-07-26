@@ -10,10 +10,13 @@ using MGroup.LinearAlgebra.Vectors;
 
 namespace MGroup.FEM.Structural.Line
 {
-	public class ContactSurfaceToSurface3D : IStructuralElementType
+	public class ContactSurfaceToSurface3DFriction : IStructuralElementType
 	{
 		private readonly IDofType[][] dofs;
-		private readonly double penaltyFactor;
+		private readonly double PenaltyFactorNormal;
+		private readonly double PenaltyFactorTangential;
+		private readonly double StickingCoefficient;
+		private readonly double SlidingCoefficient;
 		private readonly int MasterSurfaceOrder;
 		private readonly int SlaveSurfaceOrder;
 		private readonly int IntegrationPointsPerNaturalAxis;
@@ -21,8 +24,14 @@ namespace MGroup.FEM.Structural.Line
 		private IElementDofEnumerator dofEnumerator = new GenericDofEnumerator();
 		private double[] DisplacementVector { get; set; }
 		private double ContactArea { get; }
-
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea)
+		private Dictionary<int, double[]> IntegrationPointsStickingPoints { get; set; }
+		private Dictionary<int, double[]> IntegrationPointsTangentialTractions { get; set; }
+		private Dictionary<int, double[]> IntegrationPointsSurfaceBaseVectors1 { get; set; }
+		private Dictionary<int, double[]> IntegrationPointsSurfaceBaseVectors2 { get; set; }
+		private double[] PreviousConvergedSolutionNodalCoordinates { get; set; }
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient,
+			double contactArea)
 		{
 			if (nodes.Count != 8)
 			{
@@ -30,7 +39,10 @@ namespace MGroup.FEM.Structural.Line
 			}
 			else
 			{
-				this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+				this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+				this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+				this.StickingCoefficient = stickingCoefficient;
+				this.SlidingCoefficient = slidingCoefficient;
 				this.DisplacementVector = new double[3 * nodes.Count];
 				this.ContactArea = contactArea;
 				this.Nodes = nodes;
@@ -45,31 +57,110 @@ namespace MGroup.FEM.Structural.Line
 				this.MasterSurfaceOrder = 1;
 				this.SlaveSurfaceOrder = 1;
 				this.IntegrationPointsPerNaturalAxis = 2;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+				for (var i = 0; i < nodes.Count; i++)
+				{
+					PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+					PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+					PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
+				}
 			}
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea)
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal,
+			double penaltyFactorTangential, double stickingCoefficient, double slidingCoefficient,
+			double contactArea)
 		{
 			if (nodes.Count != 8)
 			{
 				throw new ArgumentException("This Constructor can be used only for linear Surfaces");
 			}
-			this.penaltyFactor = penaltyFactor;
-			this.DisplacementVector = new double[3 * nodes.Count];
-			this.ContactArea = contactArea;
-			this.Nodes = nodes;
-			dofs = new IDofType[nodes.Count][];
-			for (var i = 0; i < nodes.Count; i++)
+			else
 			{
-				dofs[i] = new IDofType[]
+				this.PenaltyFactorNormal = penaltyFactorNormal;
+				this.PenaltyFactorTangential = penaltyFactorTangential;
+				this.StickingCoefficient = stickingCoefficient;
+				this.SlidingCoefficient = slidingCoefficient;
+				this.DisplacementVector = new double[3 * nodes.Count];
+				this.ContactArea = contactArea;
+				this.Nodes = nodes;
+				dofs = new IDofType[nodes.Count][];
+				for (var i = 0; i < nodes.Count; i++)
 				{
+					dofs[i] = new IDofType[]
+					{
 						StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
+					};
+				}
+				this.MasterSurfaceOrder = 1;
+				this.SlaveSurfaceOrder = 1;
+				this.IntegrationPointsPerNaturalAxis = 2;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
 				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+				for (var i = 0; i < nodes.Count; i++)
+				{
+					PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+					PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+					PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
+				}
 			}
-			this.MasterSurfaceOrder = 1;
-			this.SlaveSurfaceOrder = 1;
-			this.IntegrationPointsPerNaturalAxis = 2;
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
 			int masterSurfaceOrder, int slaveSurfaceOrder)
 		{
 			if ((masterSurfaceOrder != 1 && masterSurfaceOrder != 2) || (slaveSurfaceOrder != 1 && slaveSurfaceOrder != 2))
@@ -80,7 +171,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the Surfaces");
 			}
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.SlidingCoefficient = slidingCoefficient;
+			this.StickingCoefficient = stickingCoefficient;
 			this.DisplacementVector = new double[3 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -89,7 +183,7 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
+					StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
 				};
 			}
 			this.MasterSurfaceOrder = masterSurfaceOrder;
@@ -97,13 +191,98 @@ namespace MGroup.FEM.Structural.Line
 			if (slaveSurfaceOrder == 1)
 			{
 				this.IntegrationPointsPerNaturalAxis = 2;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
 			}
 			else
 			{
 				this.IntegrationPointsPerNaturalAxis = 3;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+			}
+			PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
 			}
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea, int masterSurfaceOrder, int slaveSurfaceOrder)
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder)
 		{
 			if ((masterSurfaceOrder != 1 && masterSurfaceOrder != 2) || (slaveSurfaceOrder != 1 && slaveSurfaceOrder != 2))
 			{
@@ -113,7 +292,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the Surfaces");
 			}
-			this.penaltyFactor = penaltyFactor;
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.SlidingCoefficient = slidingCoefficient;
+			this.StickingCoefficient = stickingCoefficient;
 			this.DisplacementVector = new double[3 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -122,7 +304,7 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
+					StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
 				};
 			}
 			this.MasterSurfaceOrder = masterSurfaceOrder;
@@ -130,13 +312,97 @@ namespace MGroup.FEM.Structural.Line
 			if (slaveSurfaceOrder == 1)
 			{
 				this.IntegrationPointsPerNaturalAxis = 2;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] }
+				};
 			}
 			else
 			{
 				this.IntegrationPointsPerNaturalAxis = 3;
+				this.IntegrationPointsStickingPoints = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsTangentialTractions = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+				this.IntegrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>()
+				{
+					{ 1, new double[2] },
+					{ 2, new double[2] },
+					{ 3, new double[2] },
+					{ 4, new double[2] },
+					{ 5, new double[2] },
+					{ 6, new double[2] },
+					{ 7, new double[2] },
+					{ 8, new double[2] },
+					{ 9, new double[2] }
+				};
+			}
+			PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
 			}
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
 			int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis)
 		{
 			if ((masterSurfaceOrder != 1 && masterSurfaceOrder != 2) || (slaveSurfaceOrder != 1 && slaveSurfaceOrder != 2))
@@ -151,7 +417,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("Between [2,10] Gauss points per Natural Axis can be defined");
 			}
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[3 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -160,14 +429,38 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
+					StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
 				};
 			}
 			this.MasterSurfaceOrder = masterSurfaceOrder;
 			this.SlaveSurfaceOrder = slaveSurfaceOrder;
 			this.IntegrationPointsPerNaturalAxis = integrationPointsPerNaturalAxis;
+			var integrationPointsStickingPoints = new Dictionary<int, double[]>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double[]>();
+			var integrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>();
+			var integrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>();
+			for (var i = 1; i <= integrationPointsPerNaturalAxis * integrationPointsPerNaturalAxis; i++)
+			{
+				integrationPointsStickingPoints.Add(i, new double[2]);
+				integrationPointsTangentialTractions.Add(i, new double[2]);
+				integrationPointsSurfaceBaseVectors1.Add(i, new double[2]);
+				integrationPointsSurfaceBaseVectors2.Add(i, new double[2]);
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
+			this.IntegrationPointsSurfaceBaseVectors1 = integrationPointsSurfaceBaseVectors1;
+			this.IntegrationPointsSurfaceBaseVectors2 = integrationPointsSurfaceBaseVectors2;
+			PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
+			}
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea, int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis)
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis)
 		{
 			if ((masterSurfaceOrder != 1 && masterSurfaceOrder != 2) || (slaveSurfaceOrder != 1 && slaveSurfaceOrder != 2))
 			{
@@ -181,7 +474,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("Between [2,10] Gauss points per Natural Axis can be defined");
 			}
-			this.penaltyFactor = penaltyFactor;
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[3 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -190,49 +486,84 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
+					StructuralDof.TranslationX, StructuralDof.TranslationY, StructuralDof.TranslationZ
 				};
 			}
 			this.MasterSurfaceOrder = masterSurfaceOrder;
 			this.SlaveSurfaceOrder = slaveSurfaceOrder;
 			this.IntegrationPointsPerNaturalAxis = integrationPointsPerNaturalAxis;
+			var integrationPointsStickingPoints = new Dictionary<int, double[]>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double[]>();
+			var integrationPointsSurfaceBaseVectors1 = new Dictionary<int, double[]>();
+			var integrationPointsSurfaceBaseVectors2 = new Dictionary<int, double[]>();
+			for (var i = 1; i <= integrationPointsPerNaturalAxis * integrationPointsPerNaturalAxis; i++)
+			{
+				integrationPointsStickingPoints.Add(i, new double[2]);
+				integrationPointsTangentialTractions.Add(i, new double[2]);
+				integrationPointsSurfaceBaseVectors1.Add(i, new double[2]);
+				integrationPointsSurfaceBaseVectors2.Add(i, new double[2]);
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
+			this.IntegrationPointsSurfaceBaseVectors1 = integrationPointsSurfaceBaseVectors1;
+			this.IntegrationPointsSurfaceBaseVectors2 = integrationPointsSurfaceBaseVectors2;
+			PreviousConvergedSolutionNodalCoordinates = new double[3 * nodes.Count];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				PreviousConvergedSolutionNodalCoordinates[3 * i] = nodes[i].X;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 1] = nodes[i].Y;
+				PreviousConvergedSolutionNodalCoordinates[3 * i + 2] = nodes[i].Z;
+			}
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient,
 			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential,
+				  stickingCoefficient, slidingCoefficient, 1d)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, int masterSurfaceOrder, int slaveSurfaceOrder,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal,
+			double penaltyFactorTangential, double stickingCoefficient, double slidingCoefficient,
 			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d, masterSurfaceOrder, slaveSurfaceOrder)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential,
+				  stickingCoefficient, slidingCoefficient, 1d)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, int masterSurfaceOrder, int slaveSurfaceOrder,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder, IElementDofEnumerator dofEnumerator)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential, stickingCoefficient, slidingCoefficient,
+				  contactArea, masterSurfaceOrder, slaveSurfaceOrder)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder, IElementDofEnumerator dofEnumerator)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient, slidingCoefficient, contactArea, masterSurfaceOrder, slaveSurfaceOrder)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis,
 			IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0, masterSurfaceOrder, slaveSurfaceOrder)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential, stickingCoefficient,
+				  slidingCoefficient, contactArea, masterSurfaceOrder, slaveSurfaceOrder, integrationPointsPerNaturalAxis)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis,
+		public ContactSurfaceToSurface3DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis,
 			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d, masterSurfaceOrder, slaveSurfaceOrder, integrationPointsPerNaturalAxis)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient,
+				  slidingCoefficient, contactArea, masterSurfaceOrder, slaveSurfaceOrder, integrationPointsPerNaturalAxis)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public ContactSurfaceToSurface3D(IReadOnlyList<INode> nodes, double penaltyFactor, int masterSurfaceOrder, int slaveSurfaceOrder, int integrationPointsPerNaturalAxis,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0, masterSurfaceOrder, slaveSurfaceOrder, integrationPointsPerNaturalAxis)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-
 		public CellType CellType { get; } = CellType.Unknown;
 
 		public IElementDofEnumerator DofEnumerator
@@ -858,7 +1189,7 @@ namespace MGroup.FEM.Structural.Line
 					{
 						{ surfaceVector1.DotProduct(surfaceVector1), surfaceVector1.DotProduct(surfaceVector2) },
 						{ surfaceVector2.DotProduct(surfaceVector1), surfaceVector2.DotProduct(surfaceVector2) }
-					};	
+					};
 			var detm = m[0, 0] * m[1, 1] - m[0, 1] * m[1, 0];
 			var mInv = new double[,]
 					{
@@ -961,7 +1292,7 @@ namespace MGroup.FEM.Structural.Line
 						surfaceVector1.DotProduct(surfaceVector1) - surfaceVectorDerivative11.DotProduct(masterSlaveRelativeVector)
 					}
 				};
-				var vector = new double[] 
+				var vector = new double[]
 				{
 					surfaceVector1.DotProduct(masterSlaveRelativeVector),
 					surfaceVector2.DotProduct(masterSlaveRelativeVector)
@@ -1004,6 +1335,14 @@ namespace MGroup.FEM.Structural.Line
 				return ksi;
 			}
 		}
+
+		private Tuple<double[], double[]> MasterPrevSurfaceBaseVectors(double[,] da1Matrix, double[,] da2Matrix, double[] xupd)
+		{
+			var surfaceVector1 = Matrix.CreateFromArray(da1Matrix).Multiply(xupd);
+			var surfaceVector2 = Matrix.CreateFromArray(da2Matrix).Multiply(xupd);
+			return new Tuple<double[], double[]>(surfaceVector1, surfaceVector2);
+		}
+
 		private Tuple<double[], double[]> GaussPoints()
 		{
 			var iP = IntegrationPointsPerNaturalAxis;
@@ -1147,6 +1486,242 @@ namespace MGroup.FEM.Structural.Line
 			return new Tuple<double[], double[]>(gaussPoints, gaussWeights);
 		}
 
+		public void InitializeTangentialProperties()
+		{
+			var gPointId = 1;
+			var gPointsArray = GaussPoints().Item1;
+			var x0 = NodalXUpdated().Scale(-1d);
+			for (var i = 0; i < IntegrationPointsPerNaturalAxis; i++)
+			{
+				for (var j = 0; j < IntegrationPointsPerNaturalAxis; j++)
+				{
+					var ihta1 = gPointsArray[i];
+					var ihta2 = gPointsArray[j];
+					var cppInitial = Project(0.0, 0.0, ihta1, ihta2);
+					IntegrationPointsStickingPoints[gPointId][0] = cppInitial[0];
+					IntegrationPointsStickingPoints[gPointId][1] = cppInitial[1];
+
+					var positionMatrices = CalculatePositionMatrix(cppInitial[0], cppInitial[1], ihta1, ihta2);
+					var da1Matrix = positionMatrices.Item2.Item1;
+					var da2Matrix = positionMatrices.Item2.Item3;
+					var rM = MasterPrevSurfaceBaseVectors(da1Matrix, da2Matrix, x0);
+					IntegrationPointsSurfaceBaseVectors1[gPointId][0] = rM.Item1[0];
+					IntegrationPointsSurfaceBaseVectors1[gPointId][1] = rM.Item1[1];
+					IntegrationPointsSurfaceBaseVectors2[gPointId][0] = rM.Item2[0];
+					IntegrationPointsSurfaceBaseVectors2[gPointId][1] = rM.Item2[1];
+					gPointId += 1;
+				}
+			}
+		}
+
+		public void UpdateTangentialProperties()
+		{
+			var gPointId = 1;
+			var gPArray = GaussPoints().Item1;
+			var xUpd = NodalXUpdated();
+			for (var i = 0; i < IntegrationPointsPerNaturalAxis; i++)
+			{
+				for (var j = 0; j < IntegrationPointsPerNaturalAxis; j++)
+				{
+					var ihta1 = gPArray[i];
+					var ihta2 = gPArray[j];
+					var cPP = Project(0.0, 0.0, ihta1, ihta2);
+					IntegrationPointsStickingPoints[gPointId][0] = cPP[0];
+					IntegrationPointsStickingPoints[gPointId][1] = cPP[1];
+					if (Math.Abs(IntegrationPointsStickingPoints[gPointId][0]) <= 1.05 && Math.Abs(IntegrationPointsStickingPoints[gPointId][1]) <= 1.05)
+					{
+						var positionMatrices = CalculatePositionMatrix(IntegrationPointsStickingPoints[gPointId][0], IntegrationPointsStickingPoints[gPointId][1],
+							ihta1, ihta2);
+						var aMatrix = positionMatrices.Item1;
+						var da1Matrix = positionMatrices.Item2.Item1;
+						var da11Matrix = positionMatrices.Item2.Item2;
+						var da2Matrix = positionMatrices.Item2.Item3;
+						var da22Matrix = positionMatrices.Item2.Item4;
+						var da12Matrix = positionMatrices.Item2.Item5;
+						var masterSurfaceCharacteristics = MasterSurfaceGeometry(da1Matrix, da2Matrix, da11Matrix, da12Matrix, da22Matrix);
+						var mInv = masterSurfaceCharacteristics.Item4;
+						var dRho1 = masterSurfaceCharacteristics.Item1.Item1;
+						var dRho2 = masterSurfaceCharacteristics.Item1.Item2;
+						var n = masterSurfaceCharacteristics.Item5;
+						var ksi3 = CalculatePenetration(aMatrix, n);
+						if (ksi3 <= 0)
+						{
+							var xM = NodalXUpdated().Scale(-1d);
+							var ksiPrev = IntegrationPointsStickingPoints[gPointId];
+							var aMatrixOld = CalculatePositionMatrix(ksiPrev[0], ksiPrev[1], ihta1, ihta2).Item1;
+							var positionVector = new double[3];
+							var numberOfNodesMaster = (MasterSurfaceOrder + 1) * (MasterSurfaceOrder + 1);
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								positionVector[0] += xM[3 * k] * aMatrix[0, 3 * k];
+								positionVector[1] += xM[3 * k + 1] * aMatrix[0, 3 * k];
+								positionVector[2] += xM[3 * k + 2] * aMatrix[0, 3 * k];
+							}
+							var oldPositionVector = new double[3];
+							var nodalDIsplacementsIncrements = CalculateNodalDisplacementsIncrements(xUpd);
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								oldPositionVector[0] += -PreviousConvergedSolutionNodalCoordinates[3 * k] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k] * aMatrixOld[0, 3 * k];
+								oldPositionVector[1] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 1] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 1] * aMatrixOld[0, 3 * k];
+								oldPositionVector[2] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 2] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 2] * aMatrixOld[0, 3 * k];
+							}
+							var deltaKsi = new double[]
+							{
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[0,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[0,1],
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[1,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[1,1]
+							};
+							var rM1 = new double[]
+							{
+								IntegrationPointsSurfaceBaseVectors1[gPointId][0],
+								IntegrationPointsSurfaceBaseVectors1[gPointId][1]
+							};
+							var rM2 = new double[]
+							{
+								IntegrationPointsSurfaceBaseVectors2[gPointId][0],
+								IntegrationPointsSurfaceBaseVectors2[gPointId][1]
+							};
+							var mPrev = new double[,]
+							{
+								{ rM1.DotProduct(rM1), rM1.DotProduct(rM2) },
+								{ rM2.DotProduct(rM1), rM2.DotProduct(rM2) }
+							};
+							var detmPrev = mPrev[0, 0] * mPrev[1, 1] - mPrev[0, 1] * mPrev[1, 0];
+							var mPrevInv = new double[,]
+							{
+								{ mPrev[1,1]/detmPrev, - mPrev[0,1]/detmPrev },
+								{ - mPrev[1,0]/detmPrev, mPrev[0,0]/detmPrev }
+							};
+							var trialTangentialTraction = new double[]
+							{
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho1) -
+								mInv[0, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[0, 1] * PenaltyFactorTangential * deltaKsi[1],
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho2) +
+								-mInv[1, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[1, 1] * PenaltyFactorTangential * deltaKsi[1]
+							};
+							var tangentialTractionNorm = Math.Pow(mInv[0, 0] * trialTangentialTraction[0] * trialTangentialTraction[0] +
+								mInv[0, 1] * trialTangentialTraction[0] * trialTangentialTraction[1] +
+								mInv[1, 0] * trialTangentialTraction[1] * trialTangentialTraction[0] +
+								mInv[1, 1] * trialTangentialTraction[1] * trialTangentialTraction[1],
+								0.5);
+							var phiTr = tangentialTractionNorm - StickingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+							if (phiTr <= 0)
+							{
+								IntegrationPointsTangentialTractions[gPointId][0] = trialTangentialTraction[0];
+								IntegrationPointsTangentialTractions[gPointId][1] = trialTangentialTraction[1];
+							}
+							else
+							{
+								IntegrationPointsTangentialTractions[gPointId][0] = (trialTangentialTraction[0] / tangentialTractionNorm) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+								IntegrationPointsTangentialTractions[gPointId][1] = (trialTangentialTraction[1] / tangentialTractionNorm) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+							};
+						}
+						else
+						{
+							IntegrationPointsTangentialTractions[gPointId] = new double[2];
+						}
+					}
+					else
+					{
+						IntegrationPointsTangentialTractions[gPointId] = new double[2];
+					}
+					gPointId += 1;
+				}
+			}
+			for (var i = 0; i < Nodes.Count; i++)
+			{
+				PreviousConvergedSolutionNodalCoordinates[i * 3] = xUpd[i * 3];
+				PreviousConvergedSolutionNodalCoordinates[i * 3 + 1] = xUpd[i * 3 + 1];
+				PreviousConvergedSolutionNodalCoordinates[i * 3 + 2] = xUpd[i * 3 + 2];
+			}
+			UpdateMasterSurfaceBaseVectors();
+		}
+		private double[] CalculateNodalDisplacementsIncrements(double[] xUpdated)
+		{
+			var uNodalIncrements = xUpdated.Subtract(PreviousConvergedSolutionNodalCoordinates);
+			return uNodalIncrements;
+		}
+		private void UpdateMasterSurfaceBaseVectors()
+		{
+			var gPointsArray = GaussPoints().Item1;
+			var gPointId = 1;
+			for (var i = 0; i < IntegrationPointsPerNaturalAxis; i++)
+			{
+				for (var j = 0; j < IntegrationPointsPerNaturalAxis; j++)
+				{
+					var ihta1 = gPointsArray[i];
+					var ihta2 = gPointsArray[j];
+					var ksi = Project(0.0, 0.0, ihta1, ihta2);
+					var positionMatrices = CalculatePositionMatrix(ksi[0], ksi[1], ihta1, ihta2);
+					var da1Matrix = positionMatrices.Item2.Item1;
+					var da11Matrix = positionMatrices.Item2.Item2;
+					var da2Matrix = positionMatrices.Item2.Item3;
+					var da22Matrix = positionMatrices.Item2.Item4;
+					var da12Matrix = positionMatrices.Item2.Item5;
+					var masterSurfaceCharacteristics = MasterSurfaceGeometry(da1Matrix, da2Matrix, da11Matrix,
+																			da12Matrix, da22Matrix);
+					var dRho1 = masterSurfaceCharacteristics.Item1.Item1;
+					var dRho2 = masterSurfaceCharacteristics.Item1.Item2;
+					IntegrationPointsSurfaceBaseVectors1[gPointId][0] = dRho1[0];
+					IntegrationPointsSurfaceBaseVectors1[gPointId][1] = dRho1[1];
+					IntegrationPointsSurfaceBaseVectors2[gPointId][0] = dRho2[0];
+					IntegrationPointsSurfaceBaseVectors2[gPointId][1] = dRho2[1];
+					gPointId += 1;
+				}
+			}
+		}
+
+		private double ChristoffelG(int k, double[,] mInv, double[] surfaceVector1, double[] surfaceVector2,
+	double[] surfaceVectorij)
+		{
+			var G = surfaceVectorij.DotProduct(surfaceVector1) * mInv[0, k] +
+				surfaceVectorij.DotProduct(surfaceVector2) * mInv[1, k];
+			return G;
+		}
+		private double NonSymmetricCurvatureStiffnessPartScalar(double[,] mInv, double[] surfaceVector1, double[] surfaceVector2,
+	double[] T, List<double[]> surfaceVectorij)
+		{
+			var sum = 0.0;
+			for (var j = 0; j <= 1; j++)
+			{
+				for (var l = 0; l <= 1; l++)
+				{
+					for (var m = 0; m <= 1; m++)
+					{
+						sum += mInv[j, l] * T[l] * T[m] * ChristoffelG(m, mInv, surfaceVector1, surfaceVector2, surfaceVectorij[j]);
+					}
+				}
+			}
+			return sum;
+		}
+		private double CurvatureTensorMixedComponents(double[,] h, double[,] mInv, int i, int j)
+		{
+			var h_Mixed = h[i, 0] * mInv[0, j] + h[i, 1] * mInv[1, j];
+			return h_Mixed;
+		}
+		private double NonSymmetricCurvatureStiffnessPartScalar2(double[,] h, double[,] mInv, double[] T)
+		{
+			var sum = 0.0;
+			for (var j = 0; j <= 1; j++)
+			{
+				for (var l = 0; l <= 1; l++)
+				{
+					for (var m = 0; m <= 1; m++)
+					{
+						sum += mInv[j, l] * T[l] * T[m] * CurvatureTensorMixedComponents(h, mInv, j, m);
+					}
+				}
+			}
+			return sum;
+		}
+
 		#region IElementType Members
 
 		public int ID { get; set; }
@@ -1164,29 +1739,29 @@ namespace MGroup.FEM.Structural.Line
 			var nxn = n.TensorProduct(n);
 			var nxn_A = nxn * A;
 			var AT_nxn_A = A.Transpose() * nxn_A;
-			var mainStiffnessMatrix = AT_nxn_A.Scale(penaltyFactor);
+			var mainStiffnessMatrix = AT_nxn_A.Scale(PenaltyFactorNormal);
 			return mainStiffnessMatrix;
 		}
 
 		private Matrix CalculateRotationalStiffnessPart(Matrix A, Matrix dA1, Matrix dA2, double[] n, double ksi3, Matrix mInv, double[] surfaceVector1, double[] surfaceVector2)
 		{
-			var coef1 = penaltyFactor * ksi3 * mInv[0, 0];
+			var coef1 = PenaltyFactorNormal * ksi3 * mInv[0, 0];
 			var n_x_surfaceVector1 = n.TensorProduct(surfaceVector1);
 			var surfaceVector1_x_n = surfaceVector1.TensorProduct(n);
 			var firstTerm = dA1.Transpose() * n_x_surfaceVector1 * A;
 			var secondTerm = A.Transpose() * surfaceVector1_x_n * dA1;
 			var rotationalPart1 = (firstTerm + secondTerm).Scale(coef1);
-			var coef2 = penaltyFactor * ksi3 * mInv[1, 0];
+			var coef2 = PenaltyFactorNormal * ksi3 * mInv[1, 0];
 			var n_x_surfaceVector2 = n.TensorProduct(surfaceVector2);
 			var firstTerm2 = dA1.Transpose() * n_x_surfaceVector2 * A;
 			var secondTerm2 = A.Transpose() * surfaceVector1_x_n * dA2;
 			var rotationalPart2 = (firstTerm2 + secondTerm2).Scale(coef2);
-			var coef3 = penaltyFactor * ksi3 * mInv[0, 1];
+			var coef3 = PenaltyFactorNormal * ksi3 * mInv[0, 1];
 			var surfaceVector2_x_n = surfaceVector2.TensorProduct(n);
 			var firstTerm3 = dA2.Transpose() * n_x_surfaceVector1 * A;
 			var secondTerm3 = A.Transpose() * surfaceVector2_x_n * dA1;
 			var rotationalPart3 = (firstTerm3 + secondTerm3).Scale(coef3);
-			var coef4 = penaltyFactor * ksi3 * mInv[1, 1];
+			var coef4 = PenaltyFactorNormal * ksi3 * mInv[1, 1];
 			var firstTerm4 = dA2.Transpose() * n_x_surfaceVector2 * A;
 			var secondTerm4 = A.Transpose() * surfaceVector2_x_n * dA2;
 			var rotationalPart4 = (firstTerm4 + secondTerm4).Scale(coef4);
@@ -1195,10 +1770,10 @@ namespace MGroup.FEM.Structural.Line
 		}
 		private Matrix CalculateCurvatureStiffnessPart(Matrix A, double ksi3, Matrix h, double[] surfaceVector1, double[] surfaceVector2)
 		{
-			var coef1 = penaltyFactor * ksi3 * h[0, 0];
-			var coef2 = penaltyFactor * ksi3 * h[1, 0];
-			var coef3 = penaltyFactor * ksi3 * h[0, 1];
-			var coef4 = penaltyFactor * ksi3 * h[1, 1];
+			var coef1 = PenaltyFactorNormal * ksi3 * h[0, 0];
+			var coef2 = PenaltyFactorNormal * ksi3 * h[1, 0];
+			var coef3 = PenaltyFactorNormal * ksi3 * h[0, 1];
+			var coef4 = PenaltyFactorNormal * ksi3 * h[1, 1];
 
 			var surfaceVector1_x_surfaceVector1 = surfaceVector1.TensorProduct(surfaceVector1);
 			var surfaceVector1_x_surfaceVector2 = surfaceVector1.TensorProduct(surfaceVector2);
@@ -1211,11 +1786,453 @@ namespace MGroup.FEM.Structural.Line
 			var curvaturePart = firstTerm + secondTerm + thirdTerm + fourthTerm;
 			return curvaturePart;
 		}
+
+		private Matrix CalculateTangentialStiffnessPartForSticking(Matrix aMatrix, Matrix da1Matrix, Matrix da2Matrix,
+				double[,] mInv, double[,] hContravariantTensor, double[] dRho1, double[] dRho2, double[] n, double[] T)
+		{
+			var nodesNumber = (MasterSurfaceOrder + 1) * (MasterSurfaceOrder + 1) + (SlaveSurfaceOrder + 1) * (SlaveSurfaceOrder + 1);
+			var surfaceVector1_x_surfaceVector1 = dRho1.TensorProduct(dRho1);
+			var surfaceVector1_x_surfaceVector2 = dRho1.TensorProduct(dRho2);
+			var surfaceVector2_x_surfaceVector1 = dRho2.TensorProduct(dRho1);
+			var surfaceVector2_x_surfaceVector2 = dRho2.TensorProduct(dRho2);
+
+			var TangentialStiffnessPart1 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(PenaltyFactorTangential * mInv[0, 0]) +
+				(aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(PenaltyFactorTangential * mInv[0, 1]) +
+				(aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(PenaltyFactorTangential * mInv[1, 0]) +
+				(aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(PenaltyFactorTangential * mInv[1, 1]);
+
+			var TangentialStiffnessPart21 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * da1Matrix).Scale(T[0] * mInv[0, 0] * mInv[0, 0]) +
+				(da1Matrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(T[0] * mInv[0, 0] * mInv[0, 0]);
+
+			var TangentialStiffnessPart22 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * da1Matrix).Scale(T[0] * mInv[0, 0] * mInv[0, 1]) +
+				(da1Matrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(T[0] * mInv[0, 0] * mInv[0, 1]);
+
+			var TangentialStiffnessPart23 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * da1Matrix).Scale(T[0] * mInv[0, 1] * mInv[0, 0]) +
+				(da1Matrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(T[0] * mInv[0, 1] * mInv[0, 0]);
+
+			var TangentialStiffnessPart24 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * da1Matrix).Scale(T[0] * mInv[0, 1] * mInv[0, 1]) +
+				(da1Matrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(T[0] * mInv[0, 1] * mInv[0, 1]);
+
+			var TangentialStiffnessPart25 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * da2Matrix).Scale(T[0] * mInv[0, 0] * mInv[1, 0]) +
+				(da2Matrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(T[0] * mInv[0, 0] * mInv[1, 0]);
+
+			var TangentialStiffnessPart26 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * da2Matrix).Scale(T[0] * mInv[0, 0] * mInv[1, 1]) +
+				(da2Matrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(T[0] * mInv[0, 0] * mInv[1, 1]);
+
+			var TangentialStiffnessPart27 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * da2Matrix).Scale(T[0] * mInv[0, 1] * mInv[1, 0]) +
+				(da2Matrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(T[0] * mInv[0, 1] * mInv[1, 0]);
+
+			var TangentialStiffnessPart28 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * da2Matrix).Scale(T[0] * mInv[0, 1] * mInv[1, 1]) +
+				(da2Matrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(T[0] * mInv[0, 1] * mInv[1, 1]);
+
+			var TangentialStiffnessPart29 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * da1Matrix).Scale(T[1] * mInv[1, 0] * mInv[0, 0]) +
+				(da1Matrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(T[1] * mInv[1, 0] * mInv[0, 0]);
+
+			var TangentialStiffnessPart210 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * da1Matrix).Scale(T[1] * mInv[1, 0] * mInv[0, 1]) +
+				(da1Matrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(T[1] * mInv[1, 0] * mInv[0, 1]);
+
+			var TangentialStiffnessPart211 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * da1Matrix).Scale(T[1] * mInv[1, 1] * mInv[0, 0]) +
+				(da1Matrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(T[1] * mInv[1, 1] * mInv[0, 0]);
+
+			var TangentialStiffnessPart212 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * da1Matrix).Scale(T[1] * mInv[1, 1] * mInv[0, 1]) +
+				(da1Matrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(T[1] * mInv[1, 1] * mInv[0, 1]);
+
+			var TangentialStiffnessPart213 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * da2Matrix).Scale(T[1] * mInv[1, 0] * mInv[1, 0]) +
+				(da2Matrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(T[1] * mInv[1, 0] * mInv[1, 0]);
+
+			var TangentialStiffnessPart214 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * da2Matrix).Scale(T[1] * mInv[1, 0] * mInv[1, 1]) +
+				(da2Matrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(T[1] * mInv[1, 0] * mInv[1, 1]);
+
+			var TangentialStiffnessPart215 = (aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * da2Matrix).Scale(T[1] * mInv[1, 1] * mInv[1, 0]) +
+				(da2Matrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(T[1] * mInv[1, 1] * mInv[1, 0]);
+
+			var TangentialStiffnessPart216 = (aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * da2Matrix).Scale(T[1] * mInv[1, 1] * mInv[1, 1]) +
+				(da2Matrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(T[1] * mInv[1, 1] * mInv[1, 1]);
+
+			var TangentialStiffnessPart2 = TangentialStiffnessPart21 + TangentialStiffnessPart22 + TangentialStiffnessPart23 + TangentialStiffnessPart24 + TangentialStiffnessPart25 +
+				TangentialStiffnessPart26 + TangentialStiffnessPart27 + TangentialStiffnessPart28 + TangentialStiffnessPart29 + TangentialStiffnessPart210 + TangentialStiffnessPart211 +
+				TangentialStiffnessPart212 + TangentialStiffnessPart213 + TangentialStiffnessPart214 + TangentialStiffnessPart215 + TangentialStiffnessPart216;
+
+			var surfaceVector1_x_n = dRho1.TensorProduct(n);
+			var n_x_surfaceVector1 = n.TensorProduct(dRho1);
+			var surfaceVector2_x_n = dRho2.TensorProduct(n); 
+			var n_x_surfaceVector2 = n.TensorProduct(dRho2);
+
+			var TangentialStiffnessPart3 = Matrix.CreateFromArray(new double[3 * nodesNumber, 3 * nodesNumber]);
+			if (MasterSurfaceOrder != 1)
+			{
+				TangentialStiffnessPart3 = (aMatrix.Transpose() * (surfaceVector1_x_n + n_x_surfaceVector1) * aMatrix).Scale(T[0] * hContravariantTensor[0, 0]) +
+					(aMatrix.Transpose() * (surfaceVector2_x_n + n_x_surfaceVector2) * aMatrix).Scale(T[0] * hContravariantTensor[0, 1]) +
+					(aMatrix.Transpose() * (surfaceVector1_x_n + n_x_surfaceVector1) * aMatrix).Scale(T[1] * hContravariantTensor[1, 0]) +
+					(aMatrix.Transpose() * (surfaceVector2_x_n + n_x_surfaceVector2) * aMatrix).Scale(T[1] * hContravariantTensor[1, 1]);
+			}
+			var TangentialStiffnessPart = TangentialStiffnessPart3 - TangentialStiffnessPart1 - TangentialStiffnessPart2;
+			return TangentialStiffnessPart;
+		}
+		private Matrix CalculateTangentialStiffnessPartForSliding(Matrix aMatrix, Matrix da1Matrix, Matrix da2Matrix,
+			double[,] mInv, double[,] h, double[,] hContravariantTensor, double[] dRho1, double[] dRho2, double[] dRho11, double[] dRho12, double[] dRho22,
+			double[] n, double[] T, double ksi3, double trialTangentialTractionNorm)
+		{
+			var nodesNumber = (MasterSurfaceOrder + 1) * (MasterSurfaceOrder + 1) + (SlaveSurfaceOrder + 1) * (SlaveSurfaceOrder + 1);
+			var surfaceVector1_x_surfaceVector1 = dRho1.TensorProduct(dRho1);
+			var surfaceVector1_x_surfaceVector2 = dRho1.TensorProduct(dRho2);
+			var surfaceVector2_x_surfaceVector1 = dRho2.TensorProduct(dRho1);
+			var surfaceVector2_x_surfaceVector2 = dRho2.TensorProduct(dRho2); 
+			var surfaceVector1_x_n = dRho1.TensorProduct(n);
+			var n_x_surfaceVector1 = n.TensorProduct(dRho1);
+			var surfaceVector2_x_n = dRho2.TensorProduct(n);
+			var n_x_surfaceVector2 = n.TensorProduct(dRho2);
+
+			var TangentialStiffnessPart1 =
+				((aMatrix.Transpose() * surfaceVector1_x_n * aMatrix).Scale(mInv[0, 0]) +
+				(aMatrix.Transpose() * surfaceVector2_x_n * aMatrix).Scale(mInv[0, 1])).
+				Scale(PenaltyFactorNormal * SlidingCoefficient * T[0] / trialTangentialTractionNorm)
+				+
+				((aMatrix.Transpose() * surfaceVector1_x_n * aMatrix).Scale(mInv[1, 0]) +
+				(aMatrix.Transpose() * surfaceVector2_x_n * aMatrix).Scale(mInv[1, 1])).
+				Scale(PenaltyFactorNormal * SlidingCoefficient * T[1] / trialTangentialTractionNorm);
+
+			var TangentialStiffnessPart2 =
+				((aMatrix.Transpose() * surfaceVector1_x_surfaceVector1 * aMatrix).Scale(mInv[0, 0]) +
+				(aMatrix.Transpose() * surfaceVector1_x_surfaceVector2 * aMatrix).Scale(mInv[0, 1])).
+				Scale(PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) / trialTangentialTractionNorm)
+				+
+				((aMatrix.Transpose() * surfaceVector2_x_surfaceVector1 * aMatrix).Scale(mInv[1, 0]) +
+				(aMatrix.Transpose() * surfaceVector2_x_surfaceVector2 * aMatrix).Scale(mInv[1, 1])).
+				Scale(PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) / trialTangentialTractionNorm);
+
+			var matrix31 =
+				aMatrix.Transpose() * 
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[0, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 0] * mInv[0, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[0, 1])
+				)
+				* aMatrix;
+
+			var matrix32 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[1, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 0] * mInv[1, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[1, 1])
+				)
+				* aMatrix;
+
+			var matrix33 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[0, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 0] * mInv[0, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[0, 1])
+				)
+				* aMatrix;
+
+			var matrix34 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[1, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 0] * mInv[1, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[1, 1])
+				)
+				* aMatrix;
+
+			var TangentialStiffnessPart3 =
+				matrix31.Scale
+				(
+				PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) *
+				T[0] * T[0] / Math.Pow(trialTangentialTractionNorm, 3)
+				) +
+				matrix32.Scale
+				(
+				PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) *
+				T[0] * T[1] / Math.Pow(trialTangentialTractionNorm, 3)
+				) +
+				matrix33.Scale
+				(
+				PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) *
+				T[1] * T[0] / Math.Pow(trialTangentialTractionNorm, 3)
+				) +
+				matrix34.Scale
+				(
+				PenaltyFactorTangential * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) *
+				T[1] * T[1] / Math.Pow(trialTangentialTractionNorm, 3)
+				);
+
+			var matrix41 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 0] * mInv[0, 1]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[0, 1])
+				)
+				* da1Matrix;
+
+			var matrix42 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 0] * mInv[1, 1]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[1, 1])
+				)
+				* da2Matrix;
+
+			var matrix43 =
+				da1Matrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[0, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 0] * mInv[0, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[0, 1])
+				)
+				* aMatrix;
+
+			var matrix44 =
+				da2Matrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[0, 0] * mInv[1, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[0, 0] * mInv[1, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[0, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[0, 1] * mInv[1, 1])
+				)
+				* aMatrix;
+
+			var matrix45 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 0] * mInv[0, 1]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[0, 1])
+				)
+				* da1Matrix;
+
+			var matrix46 =
+				aMatrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 0] * mInv[1, 1]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[1, 1])
+				)
+				* da2Matrix;
+
+			var matrix47 =
+				da1Matrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[0, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 0] * mInv[0, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 1] * mInv[0, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[0, 1])
+				)
+				* aMatrix;
+
+			var matrix48 =
+				da2Matrix.Transpose() *
+				(
+				surfaceVector1_x_surfaceVector1.Scale(mInv[1, 0] * mInv[1, 0]) +
+				surfaceVector1_x_surfaceVector2.Scale(mInv[1, 0] * mInv[1, 1]) +
+				surfaceVector2_x_surfaceVector1.Scale(mInv[1, 1] * mInv[1, 0]) +
+				surfaceVector2_x_surfaceVector2.Scale(mInv[1, 1] * mInv[1, 1])
+				)
+				* aMatrix;
+
+			var TangentialStiffnessPart4 =
+				(matrix41 + matrix42 + matrix43 + matrix44).Scale
+				(
+					SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] / trialTangentialTractionNorm
+				)
+				+
+				(matrix45 + matrix46 + matrix47 + matrix48).Scale
+				(
+					SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] / trialTangentialTractionNorm
+				);
+
+			var TangentialStiffnessPart5 = Matrix.CreateFromArray(new double[3 * nodesNumber, 3 * nodesNumber]);
+			var TangentialStiffnessPart6 = Matrix.CreateFromArray(new double[3 * nodesNumber, 3 * nodesNumber]);
+			if (MasterSurfaceOrder != 1)
+			{
+				TangentialStiffnessPart5 =
+					(
+					(aMatrix.Transpose() * (surfaceVector1_x_n + n_x_surfaceVector1) * aMatrix).Scale(hContravariantTensor[0, 0]) +
+					(aMatrix.Transpose() * (surfaceVector2_x_n + n_x_surfaceVector2) * aMatrix).Scale(hContravariantTensor[0, 1])
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] / trialTangentialTractionNorm)
+					+
+					(
+					(aMatrix.Transpose() * (surfaceVector1_x_n + n_x_surfaceVector1) * aMatrix).Scale(hContravariantTensor[1, 0]) +
+					(aMatrix.Transpose() * (surfaceVector2_x_n + n_x_surfaceVector2) * aMatrix).Scale(hContravariantTensor[1, 1])
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] / trialTangentialTractionNorm);
+
+				var surfaceVectorsij = new List<double[]>
+				{
+					dRho11,
+					dRho12
+				};
+				var TangentialStiffnessPart61 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[0, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart62 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[0, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho12;
+				surfaceVectorsij[1] = dRho22;
+
+				var TangentialStiffnessPart63 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[0, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart64 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[0, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart65 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_n * aMatrix).
+					Scale(NonSymmetricCurvatureStiffnessPartScalar2(h, mInv, T))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) *
+					T[0] * mInv[0, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho11;
+				surfaceVectorsij[1] = dRho12;
+
+				var TangentialStiffnessPart66 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[1, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+
+				var TangentialStiffnessPart67 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[1, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho12;
+				surfaceVectorsij[1] = dRho22;
+
+				var TangentialStiffnessPart68 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[1, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart69 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[1, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart610 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_n * aMatrix).
+					Scale(NonSymmetricCurvatureStiffnessPartScalar2(h, mInv, T))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[0] * mInv[1, 0] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho11;
+				surfaceVectorsij[1] = dRho12;
+
+				var TangentialStiffnessPart611 =
+				(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+				).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[0, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart612 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[0, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho12;
+				surfaceVectorsij[1] = dRho22;
+
+				var TangentialStiffnessPart613 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[0, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart614 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[0, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart615 =
+					(
+					aMatrix.Transpose() * (surfaceVector1_x_n * aMatrix).
+					Scale(NonSymmetricCurvatureStiffnessPartScalar2(h, mInv, T))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[0, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho11;
+				surfaceVectorsij[1] = dRho12;
+
+				var TangentialStiffnessPart616 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[1, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart617 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 0] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[1, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				surfaceVectorsij[0] = dRho12;
+				surfaceVectorsij[1] = dRho22;
+
+				var TangentialStiffnessPart618 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector1 * aMatrix).
+					Scale(-mInv[0, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[1, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart619 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_surfaceVector2 * aMatrix).
+					Scale(-mInv[1, 1] * NonSymmetricCurvatureStiffnessPartScalar(mInv, dRho1, dRho2, T, surfaceVectorsij))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[1, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				var TangentialStiffnessPart620 =
+					(
+					aMatrix.Transpose() * (surfaceVector2_x_n * aMatrix).
+					Scale(NonSymmetricCurvatureStiffnessPartScalar2(h, mInv, T))
+					).Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * T[1] * mInv[1, 1] / Math.Pow(trialTangentialTractionNorm, 3));
+
+				TangentialStiffnessPart6 = TangentialStiffnessPart61 + TangentialStiffnessPart62 + TangentialStiffnessPart63 + TangentialStiffnessPart64 +
+					TangentialStiffnessPart65 + TangentialStiffnessPart66 + TangentialStiffnessPart67 + TangentialStiffnessPart68 +
+					TangentialStiffnessPart69 + TangentialStiffnessPart610 + TangentialStiffnessPart611 + TangentialStiffnessPart612 +
+					TangentialStiffnessPart613 + TangentialStiffnessPart614 + TangentialStiffnessPart615 + TangentialStiffnessPart616 +
+					TangentialStiffnessPart617 + TangentialStiffnessPart618 + TangentialStiffnessPart619 + TangentialStiffnessPart620;
+			}
+			var TangentialStiffnessPart = TangentialStiffnessPart1 + TangentialStiffnessPart2 + TangentialStiffnessPart3.Scale(-1d) + TangentialStiffnessPart4 +
+				TangentialStiffnessPart5.Scale(-1d) + TangentialStiffnessPart6.Scale(-1d);
+			return TangentialStiffnessPart;
+		}
 		public IMatrix StiffnessMatrix()
 		{
 			var globalStifnessMatrix = Matrix.CreateFromArray(new double[3 * Nodes.Count, 3 * Nodes.Count]);
 			var gPArray = GaussPoints().Item1;
 			var gWArray = GaussPoints().Item2;
+			var gPointId = 1;
 			for (var i = 0; i < IntegrationPointsPerNaturalAxis; i++)
 			{
 				var ihta1 = gPArray[i];
@@ -1230,17 +2247,18 @@ namespace MGroup.FEM.Structural.Line
 						var positionMatrices = CalculatePositionMatrix(ksi[0], ksi[1], ihta1, ihta2);
 						var aMatrix = positionMatrices.Item1;
 						var da1Matrix = positionMatrices.Item2.Item1;
-						var da2Matrix = positionMatrices.Item2.Item3;
 						var da11Matrix = positionMatrices.Item2.Item2;
-						var da12Matrix = positionMatrices.Item2.Item5;
+						var da2Matrix = positionMatrices.Item2.Item3;
 						var da22Matrix = positionMatrices.Item2.Item4;
+						var da12Matrix = positionMatrices.Item2.Item5;
 						var masterSurfaceCharacteristics = MasterSurfaceGeometry(da1Matrix, da2Matrix, da11Matrix,
 																				da12Matrix, da22Matrix);
-						var m = masterSurfaceCharacteristics.Item4;
 						var dRho1 = masterSurfaceCharacteristics.Item1.Item1;
 						var dRho2 = masterSurfaceCharacteristics.Item1.Item2;
+						var mInv = masterSurfaceCharacteristics.Item4;
 						var n = masterSurfaceCharacteristics.Item5;
-						var h = masterSurfaceCharacteristics.Item7;
+						var h = masterSurfaceCharacteristics.Item6;
+						var hContravariantTensor = masterSurfaceCharacteristics.Item7;
 						var ksi3 = CalculatePenetration(aMatrix, n);
 						if (ksi3 <= 0)
 						{
@@ -1249,18 +2267,99 @@ namespace MGroup.FEM.Structural.Line
 							var mainPart = CalculateMainStiffnessPart(Matrix.CreateFromArray(aMatrix), n);
 							var rotationalPart = CalculateRotationalStiffnessPart(Matrix.CreateFromArray(aMatrix), Matrix.CreateFromArray(da1Matrix),
 								Matrix.CreateFromArray(da2Matrix), n, ksi3,
-								Matrix.CreateFromArray(m), dRho1, dRho2);
+								Matrix.CreateFromArray(mInv), dRho1, dRho2);
 							var curvaturePart = Matrix.CreateFromArray(new double[3 * Nodes.Count, 3 * Nodes.Count]);
 							if (MasterSurfaceOrder != 1)
 							{
 								curvaturePart = CalculateCurvatureStiffnessPart(Matrix.CreateFromArray(aMatrix), ksi3,
-								Matrix.CreateFromArray(h), dRho1, dRho2);
+								Matrix.CreateFromArray(hContravariantTensor), dRho1, dRho2);
 							}
 							var scalar = Math.Pow(slaveMetricTensorDet, 0.5) * gW1 * gW2;
-							var integrationPointStifnessContribution = (mainPart + rotationalPart + curvaturePart) * scalar;
-							globalStifnessMatrix += integrationPointStifnessContribution;
+							var integrationPointNormalPartStifnessContribution = (mainPart + rotationalPart + curvaturePart) * scalar;
+							globalStifnessMatrix += integrationPointNormalPartStifnessContribution;
+
+							var x = NodalXUpdated().Scale(-1d);
+							var ksiPrev = IntegrationPointsStickingPoints[gPointId];
+							var aMatrixOld = CalculatePositionMatrix(ksiPrev[0], ksiPrev[1], ihta1, ihta2).Item1;
+							var positionVector = new double[3];
+							var numberOfNodesMaster = (MasterSurfaceOrder + 1) * (MasterSurfaceOrder + 1);
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								positionVector[0] += x[3 * k] * aMatrix[0, 3 * k];
+								positionVector[1] += x[3 * k + 1] * aMatrix[0, 3 * k];
+								positionVector[2] += x[3 * k + 2] * aMatrix[0, 3 * k];
+							}
+							var nodalDIsplacementsIncrements = CalculateNodalDisplacementsIncrements(NodalXUpdated());
+							var oldPositionVector = new double[3];
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								oldPositionVector[0] += -PreviousConvergedSolutionNodalCoordinates[3 * k] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k] * aMatrixOld[0, 3 * k];
+								oldPositionVector[1] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 1] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 1] * aMatrixOld[0, 3 * k];
+								oldPositionVector[2] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 2] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 2] * aMatrixOld[0, 3 * k];
+							}
+							var deltaKsi = new double[]
+							{
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[0,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[0,1],
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[1,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[1,1]
+							};
+							var rM1 = IntegrationPointsSurfaceBaseVectors1[gPointId];
+							var rM2 = IntegrationPointsSurfaceBaseVectors1[gPointId];
+							var mPrev = new double[,]
+							{
+								{ rM1.DotProduct(rM1), rM1.DotProduct(rM2) },
+								{ rM2.DotProduct(rM1), rM2.DotProduct(rM2) }
+							};
+							var detmPrev = mPrev[0, 0] * mPrev[1, 1] - mPrev[0, 1] * mPrev[1, 0];
+							var mPrevInv = new double[,]
+							{
+								{ mPrev[1,1]/detmPrev, - mPrev[0,1]/detmPrev },
+								{ - mPrev[1,0]/detmPrev, mPrev[0,0]/detmPrev }
+							};
+							var trialTangentialTraction = new double[]
+							{
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho1) -
+								mInv[0, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[0, 1] * PenaltyFactorTangential * deltaKsi[1],
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho2) +
+								-mInv[1, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[1, 1] * PenaltyFactorTangential * deltaKsi[1]
+							};
+							var tangentialTractionNorm = Math.Pow(mInv[0, 0] * trialTangentialTraction[0] * trialTangentialTraction[0] +
+								mInv[0, 1] * trialTangentialTraction[0] * trialTangentialTraction[1] +
+								mInv[1, 0] * trialTangentialTraction[1] * trialTangentialTraction[0] +
+								mInv[1, 1] * trialTangentialTraction[1] * trialTangentialTraction[1],
+								0.5);
+							var phiTr = tangentialTractionNorm - StickingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+							if (phiTr <= 0)
+							{
+								//stick
+								var StifnessMatrixTangentialPart = CalculateTangentialStiffnessPartForSticking(Matrix.CreateFromArray(aMatrix), Matrix.CreateFromArray(da1Matrix).Scale(-1d),
+									Matrix.CreateFromArray(da2Matrix).Scale(-1d),
+									mInv, hContravariantTensor, dRho1, dRho2, n, trialTangentialTraction);
+								var stickStifnessMatrix = StifnessMatrixTangentialPart.Scale(scalar);
+								globalStifnessMatrix += stickStifnessMatrix;
+							}
+							else
+							{
+								//slide
+								var dRho11 = masterSurfaceCharacteristics.Item1.Item3;
+								var dRho12 = masterSurfaceCharacteristics.Item1.Item4;
+								var dRho22 = masterSurfaceCharacteristics.Item1.Item5;
+								var StifnessMatrixTangentialPart = CalculateTangentialStiffnessPartForSliding(Matrix.CreateFromArray(aMatrix), Matrix.CreateFromArray(da1Matrix).Scale(-1d),
+									Matrix.CreateFromArray(da2Matrix).Scale(-1d),
+								mInv, h, hContravariantTensor, dRho1, dRho2, dRho11, dRho12, dRho22, n, trialTangentialTraction, ksi3, tangentialTractionNorm);
+								var slideStifnessMatrix = StifnessMatrixTangentialPart.Scale(scalar);
+								globalStifnessMatrix += slideStifnessMatrix;
+							}
 						}
 					}
+					gPointId += 1;
 				}
 			}
 			return dofEnumerator.GetTransformedMatrix(globalStifnessMatrix);
@@ -1285,6 +2384,7 @@ namespace MGroup.FEM.Structural.Line
 			var internalGlobalForcesVector = new double[3 * Nodes.Count];
 			var gPArray = GaussPoints().Item1;
 			var gWArray = GaussPoints().Item2;
+			var gPointId = 1;
 			for (var i = 0; i < IntegrationPointsPerNaturalAxis; i++)
 			{
 				var ihta1 = gPArray[i];
@@ -1305,6 +2405,9 @@ namespace MGroup.FEM.Structural.Line
 						var da22Matrix = positionMatrices.Item2.Item4;
 						var masterSurfaceCharacteristics = MasterSurfaceGeometry(da1Matrix, da2Matrix, da11Matrix,
 																					da12Matrix, da22Matrix);
+						var dRho1 = masterSurfaceCharacteristics.Item1.Item1;
+						var dRho2 = masterSurfaceCharacteristics.Item1.Item2;
+						var mInv = masterSurfaceCharacteristics.Item4;
 						var n = masterSurfaceCharacteristics.Item5;
 						var ksi3 = CalculatePenetration(aMatrix, n);
 						if (ksi3 <= 0)
@@ -1313,10 +2416,94 @@ namespace MGroup.FEM.Structural.Line
 							var scalar = Math.Pow(slaveMetricTensor, 0.5) * gW1 * gW2;
 							var AT = Matrix.CreateFromArray(aMatrix).Transpose();
 							var AT_n = AT.Multiply(n);
-							var internalForcesVectorIntegarationPointContribution = AT_n.Scale(penaltyFactor * ksi3 * scalar);
-							internalGlobalForcesVector = internalGlobalForcesVector.Add(internalForcesVectorIntegarationPointContribution);
+							var AT_rM1 = AT.Multiply(dRho1); 
+							var AT_rM2 = AT.Multiply(dRho2);
+							var internalForcesVectorNormalPartIntegarationPointContribution = AT_n.Scale(PenaltyFactorNormal * ksi3 * scalar);
+							internalGlobalForcesVector = internalGlobalForcesVector.Add(internalForcesVectorNormalPartIntegarationPointContribution);
+
+
+							var x = NodalXUpdated().Scale(-1d);
+							var ksiPrev = IntegrationPointsStickingPoints[gPointId];
+							var aMatrixOld = CalculatePositionMatrix(ksiPrev[0], ksiPrev[1], ihta1, ihta2).Item1;
+							var positionVector = new double[3];
+							var numberOfNodesMaster = (MasterSurfaceOrder + 1) * (MasterSurfaceOrder + 1);
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								positionVector[0] += x[3 * k] * aMatrix[0, 3 * k];
+								positionVector[1] += x[3 * k + 1] * aMatrix[0, 3 * k];
+								positionVector[2] += x[3 * k + 2] * aMatrix[0, 3 * k];
+							}
+							var nodalDIsplacementsIncrements = CalculateNodalDisplacementsIncrements(NodalXUpdated());
+							var oldPositionVector = new double[3];
+							for (var k = 0; k < numberOfNodesMaster; k++)
+							{
+								oldPositionVector[0] += -PreviousConvergedSolutionNodalCoordinates[3 * k] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k] * aMatrixOld[0, 3 * k];
+								oldPositionVector[1] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 1] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 1] * aMatrixOld[0, 3 * k];
+								oldPositionVector[2] += -PreviousConvergedSolutionNodalCoordinates[3 * k + 2] * aMatrixOld[0, 3 * k] - nodalDIsplacementsIncrements[3 * k + 2] * aMatrixOld[0, 3 * k];
+							}
+							var deltaKsi = new double[]
+							{
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[0,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[0,1],
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho1) * mInv[1,0] +
+								(positionVector.Subtract(oldPositionVector)).DotProduct(dRho2) * mInv[1,1]
+							};
+							var rM1 = IntegrationPointsSurfaceBaseVectors1[gPointId];
+							var rM2 = IntegrationPointsSurfaceBaseVectors1[gPointId];
+							var mPrev = new double[,]
+							{
+								{ rM1.DotProduct(rM1), rM1.DotProduct(rM2) },
+								{ rM2.DotProduct(rM1), rM2.DotProduct(rM2) }
+							};
+							var detmPrev = mPrev[0, 0] * mPrev[1, 1] - mPrev[0, 1] * mPrev[1, 0];
+							var mPrevInv = new double[,]
+							{
+								{ mPrev[1,1]/detmPrev, - mPrev[0,1]/detmPrev },
+								{ - mPrev[1,0]/detmPrev, mPrev[0,0]/detmPrev }
+							};
+							var trialTangentialTraction = new double[]
+							{
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho1) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho1) -
+								mInv[0, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[0, 1] * PenaltyFactorTangential * deltaKsi[1],
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][0] * mPrevInv[0, 1] * rM2.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 0] * rM1.DotProduct(dRho2) +
+								IntegrationPointsTangentialTractions[gPointId][1] * mPrevInv[1, 1] * rM2.DotProduct(dRho2) +
+								-mInv[1, 0] * PenaltyFactorTangential * deltaKsi[0] - mInv[1, 1] * PenaltyFactorTangential * deltaKsi[1]
+							};
+							var tangentialTractionNorm = Math.Pow(mInv[0, 0] * trialTangentialTraction[0] * trialTangentialTraction[0] +
+								mInv[0, 1] * trialTangentialTraction[0] * trialTangentialTraction[1] +
+								mInv[1, 0] * trialTangentialTraction[1] * trialTangentialTraction[0] +
+								mInv[1, 1] * trialTangentialTraction[1] * trialTangentialTraction[1],
+								0.5);
+							var phiTr = tangentialTractionNorm - StickingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+							if (phiTr <= 0)
+							{
+								//stick
+								var tangentialLocalForcesVector =
+									(((AT_rM1.Scale(mInv[0, 0])).Add(AT_rM2.Scale(mInv[1, 0]))).Scale(-trialTangentialTraction[0])).
+									Add(((AT_rM1.Scale(mInv[0, 1])).Add(AT_rM2.Scale(mInv[1, 1]))).Scale(-trialTangentialTraction[1]));
+								internalGlobalForcesVector = internalGlobalForcesVector.Add(tangentialLocalForcesVector.Scale(scalar));
+							}
+							else
+							{
+								//slide
+								var T = new double[]
+								{
+									(trialTangentialTraction[0] / tangentialTractionNorm) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3),
+									(trialTangentialTraction[1] / tangentialTractionNorm) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3)
+								};
+								var tangentialLocalForcesVector =
+									(((AT_rM1.Scale(mInv[0, 0])).Add(AT_rM2.Scale(mInv[1, 0]))).Scale(-T[0])).
+									Add(((AT_rM1.Scale(mInv[0, 1])).Add(AT_rM2.Scale(mInv[1, 1]))).Scale(-T[1]));
+								internalGlobalForcesVector = internalGlobalForcesVector.Add(tangentialLocalForcesVector.Scale(scalar));
+							}
 						}
 					}
+					gPointId += 1;
 				}
 			}
 			return internalGlobalForcesVector;

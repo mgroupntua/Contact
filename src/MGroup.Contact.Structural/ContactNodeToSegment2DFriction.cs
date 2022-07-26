@@ -10,47 +10,73 @@ using MGroup.LinearAlgebra.Vectors;
 
 namespace MGroup.FEM.Structural.Line
 {
-	public class ContactNodeToSegment2D : IStructuralElementType
+	public class ContactNodeToSegment2DFriction : IStructuralElementType
 	{
 		private static readonly IDofType[] nodalDOFTypes = new IDofType[] { StructuralDof.TranslationX, StructuralDof.TranslationY };
 		private static readonly IDofType[][] dofs = new IDofType[][] { nodalDOFTypes, nodalDOFTypes, nodalDOFTypes };
-		private readonly double penaltyFactor;
+		private readonly double PenaltyFactorNormal;
+		private readonly double PenaltyFactorTangential;
+		private readonly double StickingCoefficient;
+		private readonly double SlidingCoefficient;
 		private IElementDofEnumerator dofEnumerator = new GenericDofEnumerator();
 		private double[] DisplacementVector { get; set; }
 		private double ContactArea { get; }
 
-		public ContactNodeToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier,
+		public ContactNodeToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient,
 			double contactArea)
 		{
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[6];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
 		}
-		public ContactNodeToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea)
+		public ContactNodeToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea)
 		{
-			this.penaltyFactor = penaltyFactor;
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[6];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
 		}
-		public ContactNodeToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d)
+		public ContactNodeToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient,
+			double contactArea, IElementDofEnumerator dofEnumerator)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential,
+					stickingCoefficient, slidingCoefficient, 1d)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public ContactNodeToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0)
+		public ContactNodeToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea, IElementDofEnumerator dofEnumerator)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient, slidingCoefficient, 1.0)
 		{
 			this.dofEnumerator = dofEnumerator;
 		}
-		public CellType CellType { get; } = CellType.Unknown;
+		public CellType CellType { get; } = CellType.Unknown;// I guess?
 
 		public IElementDofEnumerator DofEnumerator
 		{
 			get { return dofEnumerator; }
 			set { dofEnumerator = value; }
+		}
+
+		public double InitialProjectionPoint()
+		{
+			var Xm1Initial = Nodes[0].X;
+			var Ym1Initial = Nodes[0].Y;
+			var Xm2Initial = Nodes[1].X;
+			var Ym2Initial = Nodes[1].Y;
+			var XsInitial = Nodes[2].X;
+			var YsInitial = Nodes[2].Y;
+			var ksi1Initial = (2.0 * (XsInitial * (Xm2Initial - Xm1Initial) + YsInitial * (Ym2Initial - Ym1Initial)) - Math.Pow(Xm2Initial, 2) - Math.Pow(Ym2Initial, 2) + Math.Pow(Xm1Initial, 2) + Math.Pow(Ym1Initial, 2)) / (Math.Pow(Xm2Initial - Xm1Initial, 2) + Math.Pow(Ym2Initial - Ym1Initial, 2));
+			return ksi1Initial;
 		}
 
 		public double ClosestPointProjection()
@@ -70,7 +96,7 @@ namespace MGroup.FEM.Structural.Line
 		{
 			var AT = Matrix.CreateFromArray(aMatrix).Transpose();
 			var AT_n = Vector.CreateFromArray(AT.Multiply(n));
-			var xupd = Vector.CreateFromArray( new double[]
+			var xupd = Vector.CreateFromArray(new double[]
 			{
 				Nodes[0].X + DisplacementVector[0],
 				Nodes[0].Y + DisplacementVector[1],
@@ -83,7 +109,7 @@ namespace MGroup.FEM.Structural.Line
 			return normalGap;
 		}
 
-		private Tuple<double[], double, double[]> MasterSegmentGeoParameters(double[,] daMatrix)
+		private Tuple<double[], double, double[], double, double[]> MasterSegmentGeoParameters(double[,] daMatrix)
 		{
 			var Xm1 = Nodes[0].X + DisplacementVector[0];
 			var Ym1 = Nodes[0].Y + DisplacementVector[1];
@@ -91,7 +117,6 @@ namespace MGroup.FEM.Structural.Line
 			var Ym2 = Nodes[1].Y + DisplacementVector[3];
 			var Xs = Nodes[2].X + DisplacementVector[4];
 			var Ys = Nodes[2].Y + DisplacementVector[5];
-
 			var xupd = new double[] { -Xm1, -Ym1, -Xm2, -Ym2, -Xs, -Ys };
 			var surfaceVector = Matrix.CreateFromArray(daMatrix).Multiply(xupd);
 			var detm = surfaceVector.DotProduct(surfaceVector);
@@ -99,8 +124,8 @@ namespace MGroup.FEM.Structural.Line
 			var vector = new double[] { Ym2 - Ym1, Xm1 - Xm2 };
 			var scalarCoef = -1.0 / (2.0 * Math.Sqrt(detm));
 			var normalUnitVec = vector.Scale(scalarCoef);
-
-			return new Tuple<double[], double, double[]>(surfaceVector, m11, normalUnitVec);
+			var tVector = surfaceVector.Scale(1.0 / Math.Sqrt(detm));
+			return new Tuple<double[], double, double[], double, double[]>(surfaceVector, m11, normalUnitVec, detm, tVector);
 		}
 
 		private Tuple<double[,], double[,]> CalculatePositionMatrix(double ksi1)
@@ -140,13 +165,13 @@ namespace MGroup.FEM.Structural.Line
 			var nxn = n.TensorProduct(n);
 			var nxn_A = nxn.MultiplyRight(aMatrix);
 			var AT_nxn_A = aMatrix.Transpose().MultiplyRight(nxn_A);
-			var mainStiffnessMatrix = AT_nxn_A.Scale(penaltyFactor);
+			var mainStiffnessMatrix = AT_nxn_A.Scale(PenaltyFactorNormal);
 			return mainStiffnessMatrix;
 		}
 
 		private Matrix CalculateRotationalStiffnessPart(Matrix A, Matrix dA, double[] n, double penetration, double m11, double[] surfaceVector)
 		{
-			var coef = penaltyFactor * penetration * m11;
+			var coef = PenaltyFactorNormal * penetration * m11;
 			var n_x_dRho = n.TensorProduct(surfaceVector);
 			var dRho_x_n = surfaceVector.TensorProduct(n);
 			var firstTerm = dA.Transpose().MultiplyRight(n_x_dRho.MultiplyRight(A));
@@ -157,24 +182,49 @@ namespace MGroup.FEM.Structural.Line
 
 		public IMatrix StiffnessMatrix()
 		{
-			var ksi1 = ClosestPointProjection();
-			if (Math.Abs(ksi1) <= 1.05)
+			var Ksi1Current = ClosestPointProjection();
+			if (Math.Abs(Ksi1Current) <= 1.05)
 			{
-				var positionMatrices = CalculatePositionMatrix(ksi1);
+				var positionMatrices = CalculatePositionMatrix(Ksi1Current);
 				var A = positionMatrices.Item1;
 				var dA = positionMatrices.Item2;
 				var masterSegmentGeometry = MasterSegmentGeoParameters(dA);
 				var surfaceVector = masterSegmentGeometry.Item1;
 				var metricTensorContravariant = masterSegmentGeometry.Item2;
 				var n = masterSegmentGeometry.Item3;
-				var penatration = CalculateNormalGap(A,n);
-				if (penatration <= 0)
+				var detm = masterSegmentGeometry.Item4;
+				var tVector = masterSegmentGeometry.Item5;
+				var penetration = CalculateNormalGap(A, n);
+				if (penetration <= 0)
 				{
 					var mainPart = CalculateMainStiffnessPart(n, Matrix.CreateFromArray(A));
 					var rotationalPart = CalculateRotationalStiffnessPart(Matrix.CreateFromArray(A), Matrix.CreateFromArray(dA),
-										n, penatration, metricTensorContravariant, surfaceVector);
-					var globalStiffnessMatrix = mainPart.Add(rotationalPart);
-					return dofEnumerator.GetTransformedMatrix(globalStiffnessMatrix);
+										n, penetration, metricTensorContravariant, surfaceVector);
+					var globalStiffnessMatrixNormalPart = mainPart.Add(rotationalPart);
+					var Ksi1Initial = InitialProjectionPoint();
+					var deltaKsi = Ksi1Current - Ksi1Initial;
+					var trialTangentialTraction = -PenaltyFactorTangential * detm * deltaKsi;
+					var phi = Math.Sqrt(trialTangentialTraction * trialTangentialTraction * metricTensorContravariant) -
+						StickingCoefficient * PenaltyFactorNormal * Math.Abs(penetration);
+					var globalStiffnessMatrixTangentialPart = Matrix.CreateFromArray(new double[6, 6]);
+					if (phi <= 0.0)
+					{
+						//Sticking
+						var stickingK1 = (Matrix.CreateFromArray(A).Transpose() * tVector.TensorProduct(tVector) * Matrix.CreateFromArray(A)).Scale(PenaltyFactorTangential);
+						var StickingK2 = (Matrix.CreateFromArray(dA).Transpose() * tVector.TensorProduct(tVector) * Matrix.CreateFromArray(A)).Scale(trialTangentialTraction * metricTensorContravariant);
+						globalStiffnessMatrixTangentialPart = StickingK2 + StickingK2.Transpose() - stickingK1;
+					}
+					else
+					{
+						//Sliding
+						var slidingK1 = (Matrix.CreateFromArray(A).Transpose() * tVector.TensorProduct(n) * Matrix.CreateFromArray(A)).Scale(SlidingCoefficient * PenaltyFactorNormal * (trialTangentialTraction / Math.Abs(trialTangentialTraction)));
+						var slidingK2 = (Matrix.CreateFromArray(dA).Transpose() * tVector.TensorProduct(tVector) * Matrix.CreateFromArray(A)).
+							Scale(SlidingCoefficient * PenaltyFactorNormal * Math.Abs(penetration) * Math.Sqrt(metricTensorContravariant) * 
+							(trialTangentialTraction / Math.Abs(trialTangentialTraction)));
+						globalStiffnessMatrixTangentialPart = slidingK2 + slidingK2.Transpose() - slidingK1;
+					}
+					var globalStifnessMatrix = globalStiffnessMatrixNormalPart.Add(globalStiffnessMatrixTangentialPart);
+					return dofEnumerator.GetTransformedMatrix(globalStifnessMatrix);
 				}
 				else
 				{
@@ -206,21 +256,41 @@ namespace MGroup.FEM.Structural.Line
 
 		private double[] CreateInternalGlobalForcesVector()
 		{
-			var ksi1 = ClosestPointProjection();
-			if (Math.Abs(ksi1) <= 1.05)
+			var Ksi1Current = ClosestPointProjection();
+			if (Math.Abs(Ksi1Current) <= 1.05)
 			{
-				var positionMatrices = CalculatePositionMatrix(ksi1);
+				var positionMatrices = CalculatePositionMatrix(Ksi1Current);
 				var A = positionMatrices.Item1;
 				var dA = positionMatrices.Item2;
 				var masterSegmentGeometry = MasterSegmentGeoParameters(dA);
-				var n = masterSegmentGeometry.Item3;
-				var penetration = CalculateNormalGap(A, n);
+				var metricTensorContravariant = masterSegmentGeometry.Item2;
+				var nVector = masterSegmentGeometry.Item3;
+				var detm = masterSegmentGeometry.Item4;
+				var tVector = masterSegmentGeometry.Item5;
+				var penetration = CalculateNormalGap(A, nVector);
 				if (penetration <= 0)
 				{
 					var AT = Matrix.CreateFromArray(A).Transpose();
-					var AT_n = AT.Multiply(n);
-					var internalGlobalForcesVector = AT_n.Scale(penaltyFactor * penetration);
-					return internalGlobalForcesVector;
+					var AT_n = AT.Multiply(nVector);
+					var AT_t = AT.Multiply(tVector);
+					var Ksi1Initial = InitialProjectionPoint();
+					var deltaKsi = Ksi1Current - Ksi1Initial;
+					var trialTangentialTraction = -PenaltyFactorTangential * detm * deltaKsi;
+					var phi = Math.Sqrt(trialTangentialTraction * trialTangentialTraction * metricTensorContravariant) -
+						StickingCoefficient * PenaltyFactorNormal * Math.Abs(penetration);
+					if (phi <= 0.0)
+					{
+						var internalGlobalForcesVector = AT_n.Scale(PenaltyFactorNormal * penetration).Add
+							(AT_t.Scale(trialTangentialTraction * Math.Sqrt(metricTensorContravariant)));
+						return internalGlobalForcesVector;
+					}
+					else
+					{
+						var T1 = (trialTangentialTraction / Math.Abs(trialTangentialTraction)) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(penetration) * Math.Sqrt(detm);
+						var internalGlobalForcesVector = AT_n.Scale(PenaltyFactorNormal * penetration).Add
+							(AT_t.Scale(T1 * Math.Sqrt(metricTensorContravariant)));
+						return internalGlobalForcesVector;
+					}
 				}
 				else
 				{

@@ -10,25 +10,33 @@ using MGroup.LinearAlgebra.Vectors;
 
 namespace MGroup.FEM.Structural.Line
 {
-	public class ContactSegmentToSegment2D : IStructuralElementType
+	public class ContactSegmentToSegment2DFriction : IStructuralElementType
 	{
 		private readonly IDofType[][] dofs;
-		private readonly double penaltyFactor;
+		private readonly double PenaltyFactorNormal;
+		private readonly double PenaltyFactorTangential;
+		private readonly double StickingCoefficient;
+		private readonly double SlidingCoefficient;
 		private readonly int MasterSegmentOrder;
 		private readonly int SlaveSegmentOrder;
 		private readonly int IntegrationPoints;
-
 		private IElementDofEnumerator dofEnumerator = new GenericDofEnumerator();
 		private double[] DisplacementVector { get; set; }
 		private double ContactArea { get; }
-
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea)
+		private Dictionary<int, double> IntegrationPointsStickingPoints { get; set; }
+		private Dictionary<int, double> IntegrationPointsTangentialTractions { get; set; }
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient,
+			double contactArea)
 		{
 			if (nodes.Count != 4)
 			{
 				throw new ArgumentException("This Constructor can be used only for linear segments");
 			}
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[2 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -43,14 +51,28 @@ namespace MGroup.FEM.Structural.Line
 			this.MasterSegmentOrder = 1;
 			this.SlaveSegmentOrder = 1;
 			this.IntegrationPoints = 2;
+			this.IntegrationPointsStickingPoints = new Dictionary<int, double>() 
+			{
+				{ 1, 0.0 },
+				{ 2, 0.0 }
+			};
+			this.IntegrationPointsTangentialTractions = new Dictionary<int, double>()
+			{
+				{ 1, 0.0 },
+				{ 2, 0.0 }
+			};
 		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea)
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea)
 		{
 			if (nodes.Count != 4)
 			{
 				throw new ArgumentException("This Constructor can be used only for linear segments");
 			}
-			this.penaltyFactor = penaltyFactor;
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[2 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -65,42 +87,20 @@ namespace MGroup.FEM.Structural.Line
 			this.MasterSegmentOrder = 1;
 			this.SlaveSegmentOrder = 1;
 			this.IntegrationPoints = 2;
+			this.IntegrationPointsStickingPoints = new Dictionary<int, double>()
+			{
+				{ 1, 0.0 },
+				{ 2, 0.0 }
+			};
+			this.IntegrationPointsTangentialTractions = new Dictionary<int, double>()
+			{
+				{ 1, 0.0 },
+				{ 2, 0.0 }
+			};
 		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea,
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
 			int masterSegmentOrder, int slaveSegmentOrder)
-		{
-			if((masterSegmentOrder!= 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
-			{
-				throw new ArgumentException("Only linear & quadratic segments can be defined");
-			}
-			if (nodes.Count != slaveSegmentOrder + masterSegmentOrder + 2)
-			{
-				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the segments");
-			}
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
-			this.DisplacementVector = new double[2 * nodes.Count];
-			this.ContactArea = contactArea;
-			this.Nodes = nodes;
-			dofs = new IDofType[nodes.Count][];
-			for (var i = 0; i < nodes.Count; i++)
-			{
-				dofs[i] = new IDofType[]
-				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY
-				};
-			}
-			this.MasterSegmentOrder = masterSegmentOrder;
-			this.SlaveSegmentOrder = slaveSegmentOrder;
-			if (slaveSegmentOrder == 1)
-			{
-				this.IntegrationPoints = 2;
-			}
-			else
-			{
-				this.IntegrationPoints = 3;
-			}
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea, int masterSegmentOrder, int slaveSegmentOrder)
 		{
 			if ((masterSegmentOrder != 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
 			{
@@ -110,7 +110,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the segments");
 			}
-			this.penaltyFactor = penaltyFactor;
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[2 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -119,7 +122,7 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY
+						StructuralDof.TranslationX, StructuralDof.TranslationY
 				};
 			}
 			this.MasterSegmentOrder = masterSegmentOrder;
@@ -132,8 +135,116 @@ namespace MGroup.FEM.Structural.Line
 			{
 				this.IntegrationPoints = 3;
 			}
+			var integrationPointsStickingPoints = new Dictionary<int, double>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double>();
+			for (var i = 0; i < this.IntegrationPoints; i++)
+			{
+				integrationPointsStickingPoints.Add(i + 1, 0.0);
+				integrationPointsTangentialTractions.Add(i + 1, 0.0);
+
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
 		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, double contactArea,
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder)
+		{
+			if ((masterSegmentOrder != 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
+			{
+				throw new ArgumentException("Only linear & quadratic segments can be defined");
+			}
+			if (nodes.Count != slaveSegmentOrder + masterSegmentOrder + 2)
+			{
+				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the segments");
+			}
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
+			this.DisplacementVector = new double[2 * nodes.Count];
+			this.ContactArea = contactArea;
+			this.Nodes = nodes;
+			dofs = new IDofType[nodes.Count][];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				dofs[i] = new IDofType[]
+				{
+						StructuralDof.TranslationX, StructuralDof.TranslationY
+				};
+			}
+			this.MasterSegmentOrder = masterSegmentOrder;
+			this.SlaveSegmentOrder = slaveSegmentOrder;
+			if (slaveSegmentOrder == 1)
+			{
+				this.IntegrationPoints = 2;
+			}
+			else
+			{
+				this.IntegrationPoints = 3;
+			}
+			var integrationPointsStickingPoints = new Dictionary<int, double>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double>();
+			for (var i = 0; i < this.IntegrationPoints; i++)
+			{
+				integrationPointsStickingPoints.Add(i + 1, 0.0);
+				integrationPointsTangentialTractions.Add(i + 1, 0.0);
+
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
+		}
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints)
+		{
+			if ((masterSegmentOrder != 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
+			{
+				throw new ArgumentException("Only linear & quadratic segments can be defined");
+			}
+			if (nodes.Count != slaveSegmentOrder + masterSegmentOrder + 2)
+			{
+				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the segments");
+			}
+			if (integrationPoints < 2 || integrationPoints > 10)
+			{
+				throw new ArgumentException("Between [2,10] Gauss points can be defined");
+			}
+			else if(slaveSegmentOrder == 2 && integrationPoints < 3)
+			{
+				throw new ArgumentException("insufficient integration order");
+			}
+			this.PenaltyFactorNormal = penaltyFactorMultiplierNormal * youngModulus;
+			this.PenaltyFactorTangential = penaltyFactorMultiplierTangential * youngModulus;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
+			this.DisplacementVector = new double[2 * nodes.Count];
+			this.ContactArea = contactArea;
+			this.Nodes = nodes;
+			dofs = new IDofType[nodes.Count][];
+			for (var i = 0; i < nodes.Count; i++)
+			{
+				dofs[i] = new IDofType[]
+				{
+						StructuralDof.TranslationX, StructuralDof.TranslationY
+				};
+			}
+			this.MasterSegmentOrder = masterSegmentOrder;
+			this.SlaveSegmentOrder = slaveSegmentOrder;
+			this.IntegrationPoints = integrationPoints;
+			var integrationPointsStickingPoints = new Dictionary<int, double>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double>();
+			for (var i = 0; i < this.IntegrationPoints; i++)
+			{
+				integrationPointsStickingPoints.Add(i + 1, 0.0);
+				integrationPointsTangentialTractions.Add(i + 1, 0.0);
+
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
+		}
+		public ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
 			int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints)
 		{
 			if ((masterSegmentOrder != 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
@@ -152,7 +263,10 @@ namespace MGroup.FEM.Structural.Line
 			{
 				throw new ArgumentException("insufficient integration order");
 			}
-			this.penaltyFactor = penaltyFactorMultiplier * youngModulus;
+			this.PenaltyFactorNormal = penaltyFactorNormal;
+			this.PenaltyFactorTangential = penaltyFactorTangential;
+			this.StickingCoefficient = stickingCoefficient;
+			this.SlidingCoefficient = slidingCoefficient;
 			this.DisplacementVector = new double[2 * nodes.Count];
 			this.ContactArea = contactArea;
 			this.Nodes = nodes;
@@ -161,83 +275,75 @@ namespace MGroup.FEM.Structural.Line
 			{
 				dofs[i] = new IDofType[]
 				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY
+						StructuralDof.TranslationX, StructuralDof.TranslationY
 				};
 			}
 			this.MasterSegmentOrder = masterSegmentOrder;
 			this.SlaveSegmentOrder = slaveSegmentOrder;
 			this.IntegrationPoints = integrationPoints;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, double contactArea, int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints)
-		{
-			if ((masterSegmentOrder != 1 && masterSegmentOrder != 2) || (slaveSegmentOrder != 1 && slaveSegmentOrder != 2))
+			var integrationPointsStickingPoints = new Dictionary<int, double>();
+			var integrationPointsTangentialTractions = new Dictionary<int, double>();
+			for (var i = 0; i < this.IntegrationPoints; i++)
 			{
-				throw new ArgumentException("Only linear & quadratic segments can be defined");
-			}
-			if (nodes.Count != slaveSegmentOrder + masterSegmentOrder + 2)
-			{
-				throw new ArgumentException("Inconsistent input regarding the nodes & the order of the segments");
-			}
-			if (integrationPoints < 2 || integrationPoints > 10)
-			{
-				throw new ArgumentException("Between [2,10] Gauss points can be defined");
-			}
-			else if (slaveSegmentOrder == 2 && integrationPoints < 3)
-			{
-				throw new ArgumentException("insufficient integration order");
-			}
-			this.penaltyFactor = penaltyFactor;
-			this.DisplacementVector = new double[2 * nodes.Count];
-			this.ContactArea = contactArea;
-			this.Nodes = nodes;
-			dofs = new IDofType[nodes.Count][];
-			for (var i = 0; i < nodes.Count; i++)
-			{
-				dofs[i] = new IDofType[]
-				{
-							StructuralDof.TranslationX, StructuralDof.TranslationY
-				};
-			}
-			this.MasterSegmentOrder = masterSegmentOrder;
-			this.SlaveSegmentOrder = slaveSegmentOrder;
-			this.IntegrationPoints = integrationPoints;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, int masterSegmentOrder, int slaveSegmentOrder,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d, masterSegmentOrder, slaveSegmentOrder)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, int masterSegmentOrder, int slaveSegmentOrder,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0, masterSegmentOrder, slaveSegmentOrder)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplier, int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, youngModulus, penaltyFactorMultiplier, 1d, masterSegmentOrder, slaveSegmentOrder, integrationPoints)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
-		public ContactSegmentToSegment2D(IReadOnlyList<INode> nodes, double penaltyFactor, int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints,
-			IElementDofEnumerator dofEnumerator)
-			: this(nodes, penaltyFactor, 1.0, masterSegmentOrder, slaveSegmentOrder, integrationPoints)
-		{
-			this.dofEnumerator = dofEnumerator;
-		}
+				integrationPointsStickingPoints.Add(i + 1, 0.0);
+				integrationPointsTangentialTractions.Add(i + 1, 0.0);
 
+			}
+			this.IntegrationPointsStickingPoints = integrationPointsStickingPoints;
+			this.IntegrationPointsTangentialTractions = integrationPointsTangentialTractions;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential,
+					stickingCoefficient, slidingCoefficient, contactArea)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient,
+				  slidingCoefficient, contactArea)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential,
+			stickingCoefficient, slidingCoefficient, contactArea, masterSegmentOrder, slaveSegmentOrder)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient,
+				  slidingCoefficient, contactArea, masterSegmentOrder, slaveSegmentOrder)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double youngModulus, double penaltyFactorMultiplierNormal,
+			double penaltyFactorMultiplierTangential, double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, youngModulus, penaltyFactorMultiplierNormal, penaltyFactorMultiplierTangential,
+					stickingCoefficient, slidingCoefficient, contactArea, masterSegmentOrder, slaveSegmentOrder, integrationPoints)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
+		ContactSegmentToSegment2DFriction(IReadOnlyList<INode> nodes, double penaltyFactorNormal, double penaltyFactorTangential,
+			double stickingCoefficient, double slidingCoefficient, double contactArea,
+			int masterSegmentOrder, int slaveSegmentOrder, int integrationPoints,
+			IElementDofEnumerator dofEnumerator)
+			: this(nodes, penaltyFactorNormal, penaltyFactorTangential, stickingCoefficient,
+				  slidingCoefficient, contactArea, masterSegmentOrder, slaveSegmentOrder, integrationPoints)
+		{
+			this.dofEnumerator = dofEnumerator;
+		}
 		public CellType CellType { get; } = CellType.Unknown;
 
 		public IElementDofEnumerator DofEnumerator
@@ -248,15 +354,24 @@ namespace MGroup.FEM.Structural.Line
 
 		private double[] NodalXUpdated()
 		{
-			var x = new double[2 * Nodes.Count];
+			var xUpd = new double[2 * Nodes.Count];
 			for (var i = 0; i < Nodes.Count; i++)
 			{
-				x[i * 2] =	Nodes[i].X + DisplacementVector[i * 2];
-				x[i * 2 + 1] = Nodes[i].Y + DisplacementVector[i * 2 + 1];
+				xUpd[i * 2] = Nodes[i].X + DisplacementVector[i * 2];
+				xUpd[i * 2 + 1] = Nodes[i].Y + DisplacementVector[i * 2 + 1];
 			}
-			return x;
+			return xUpd;
 		}
-
+		private double[] NodalXInitial()
+		{
+			var x0 = new double[2 * Nodes.Count];
+			for (var i = 0; i < Nodes.Count; i++)
+			{
+				x0[i * 2] = Nodes[i].X;
+				x0[i * 2 + 1] = Nodes[i].Y;
+			}
+			return x0;
+		}
 		private Tuple<double[,], double[,], double[,], double[,], double[,]> CalculatePositionMatrix(double ksi1, double ksi2)
 		{
 			if (SlaveSegmentOrder == 1 && MasterSegmentOrder == 1)
@@ -430,7 +545,7 @@ namespace MGroup.FEM.Structural.Line
 			}
 		}
 
-		private Tuple<double[], double, double[], double[], double> MasterSegmentGeometry(double[,] daMatrix, double[,] da2Matrix)
+		private Tuple<double[], double, double[], double[], double, double> MasterSegmentGeometry(double[,] daMatrix, double[,] da2Matrix)
 		{
 			var xupd = NodalXUpdated().Scale(-1.0);
 			var surfaceVector = Matrix.CreateFromArray(daMatrix).Multiply(xupd);
@@ -441,8 +556,6 @@ namespace MGroup.FEM.Structural.Line
 			var scalarCoef = new double();
 			var scalarCoef2 = Math.Pow(m11, 2.0);
 			var tangentVector = new double[2];
-			var curvatureTensor = new double();
-
 			if (MasterSegmentOrder == 1)
 			{
 				var Xm1 = Nodes[0].X + DisplacementVector[0];
@@ -461,8 +574,8 @@ namespace MGroup.FEM.Structural.Line
 				tangentVector = surfaceVector.Scale(scalarCoef);
 			}
 			var normalUnitVec = vector.Scale(scalarCoef);
-			curvatureTensor = scalarCoef2 * surfaceVectorDerivative.DotProduct(normalUnitVec);
-			return new Tuple<double[], double, double[], double[], double>(surfaceVector, m11, normalUnitVec, tangentVector, curvatureTensor);
+			var curvatureTensor = scalarCoef2 * surfaceVectorDerivative.DotProduct(normalUnitVec);
+			return new Tuple<double[], double, double[], double[], double, double>(surfaceVector, m11, normalUnitVec, tangentVector, curvatureTensor, detm);
 		}
 
 		private Tuple<double[], double, double[], double[], double> SlaveSegmentGeometry(double[,] daMatrix, double[,] da2Matrix)
@@ -573,6 +686,63 @@ namespace MGroup.FEM.Structural.Line
 				}
 			}
 		}
+		private double ProjectInitialConfiguration(double ksi1Initial, double ksi2)
+		{
+			var maxIterations = 1000;
+			var tol = Math.Pow(10.0, -6.0);
+			var deltaKsi = 0.0;
+			var ksi = ksi1Initial;
+			var xInitial = NodalXInitial();
+			for (var i = 1; i <= maxIterations; i++)
+			{
+				var aMatrices = CalculatePositionMatrix(ksi, ksi2);
+				var masterSlaveRelativeVector = Matrix.CreateFromArray(aMatrices.Item1).Multiply(xInitial);
+				var surfaceVector = (Matrix.CreateFromArray(aMatrices.Item2).Multiply(xInitial)).Scale(-1.0);
+				var surfaceVectorDerivative = (Matrix.CreateFromArray(aMatrices.Item3).Multiply(xInitial)).Scale(-1.0);
+				deltaKsi = CalculateDeltaKsi(masterSlaveRelativeVector, surfaceVector, surfaceVectorDerivative);
+				ksi += deltaKsi;
+				if (Math.Abs(deltaKsi) <= tol)
+				{
+					break;
+				}
+			}
+			if (Math.Abs(deltaKsi) > tol)
+			{
+				throw new Exception("CPP not found in current iterations");
+			}
+			else
+			{
+				return ksi;
+			}
+		}
+		public void InitializeTangentialProperties()
+		{
+			var gPointsArray = GaussPoints().Item1;
+			for (var i = 0; i < IntegrationPoints; i++)
+			{
+				var ksi2 = gPointsArray[i];
+				var ksi11 = ProjectInitialConfiguration(0.0, ksi2);
+				IntegrationPointsStickingPoints[i + 1] = ksi11;
+			}
+		}
+		public void UpdateTangentialProperties()
+		{
+			var gPointsArray = GaussPoints().Item1;
+			for (var i = 0; i < IntegrationPoints; i++)
+			{
+				var ksi2 = gPointsArray[i];
+				var ksi11 = Project(0.0, ksi2);
+				var deltaKsi1 = ksi11 - IntegrationPointsStickingPoints[i + 1];
+				var positionMatrices = CalculatePositionMatrix(ksi11, ksi2);
+				var da1Matrix = positionMatrices.Item2;
+				var da11Matrix = positionMatrices.Item3;
+				var detm = MasterSegmentGeometry(da1Matrix, da11Matrix).Item6;
+				var tangentialTraction = IntegrationPointsTangentialTractions[i + 1] - detm * PenaltyFactorTangential * deltaKsi1;
+				IntegrationPointsStickingPoints[i + 1] = ksi11;
+				IntegrationPointsTangentialTractions[i + 1] = tangentialTraction;
+			}
+		}
+
 		private Tuple<double[], double[]> GaussPoints()
 		{
 			var iP = IntegrationPoints;
@@ -733,13 +903,13 @@ namespace MGroup.FEM.Structural.Line
 			var nxn = n.TensorProduct(n);
 			var nxn_A = nxn * A;
 			var AT_nxn_A = A.Transpose() * nxn_A;
-			var mainStiffnessMatrix = AT_nxn_A.Scale(penaltyFactor);
+			var mainStiffnessMatrix = AT_nxn_A.Scale(PenaltyFactorNormal);
 			return mainStiffnessMatrix;
 		}
 
 		private Matrix CalculateRotationalStiffnessPart(double[,] A, double[,] dA, double[] n, double ksi3, double m11, double[] dRho)
 		{
-			var coef = penaltyFactor * ksi3 * m11;
+			var coef = PenaltyFactorNormal * ksi3 * m11;
 			var n_x_dRho = n.TensorProduct(dRho);
 			var dRho_x_n = dRho.TensorProduct(n);
 			var firstTerm = Matrix.CreateFromArray(dA).Transpose() * n_x_dRho * Matrix.CreateFromArray(A);
@@ -750,11 +920,39 @@ namespace MGroup.FEM.Structural.Line
 
 		private Matrix CalculateCurvatureStiffnessPart(double[,] A, double ksi3, double m11, double[] dRho, double h11)
 		{
-			var coef = penaltyFactor * ksi3 * m11 * h11;
+			var coef = PenaltyFactorNormal * ksi3 * m11 * h11;
 			var dRho_x_dRho = dRho.TensorProduct(dRho);
 			var mat = Matrix.CreateFromArray(A).Transpose() * dRho_x_dRho * Matrix.CreateFromArray(A);
 			var curvaturePart = mat.Scale(coef);
 			return curvaturePart;
+		}
+
+		private Matrix CalculateTangentialStiffnessPartForSticking(Matrix A, Matrix dA, double Tangtr, double[] normalVector, double[] tangentVector, double detm, double m11, double h11)
+		{
+			var coef2 = Tangtr * m11;
+			var coef3 = Tangtr * h11 * Math.Pow(detm, 0.5);
+			var t_x_t = tangentVector.TensorProduct(tangentVector);
+			var t_x_n = tangentVector.TensorProduct(normalVector);
+			var n_x_t = normalVector.TensorProduct(tangentVector);
+			var tangentialPart1 = (A.Transpose() * t_x_t * A).Scale(PenaltyFactorTangential);
+			var tangentialPart2 = (dA.Transpose() * t_x_t * A).Scale(coef2);
+			var tangentialPart3 = (A.Transpose() * (t_x_n + n_x_t) * A).Scale(coef3);
+			var fullTangentialPart = tangentialPart1.Scale(-1d) + tangentialPart2 + tangentialPart2.Transpose() + tangentialPart3.Transpose();
+			return fullTangentialPart;
+		}
+		private Matrix CalculateTangentialStiffnessPartForSliding(Matrix A, Matrix dA, double Tangtr, double[] normalVector, double[] tangentVector, double detm, double m11, double h11, double ksi3)
+		{
+			var coef1 = SlidingCoefficient * PenaltyFactorNormal * (Tangtr / Math.Abs(Tangtr));
+			var coef2 = SlidingCoefficient * PenaltyFactorNormal * (Tangtr / Math.Abs(Tangtr)) * Math.Abs(ksi3) * Math.Pow(m11, 0.5);
+			var coef3 = SlidingCoefficient * PenaltyFactorNormal * (Tangtr / Math.Abs(Tangtr)) * Math.Abs(ksi3) * h11 * detm;
+			var t_x_t = tangentVector.TensorProduct(tangentVector);
+			var t_x_n = tangentVector.TensorProduct(normalVector);
+			var n_x_t = normalVector.TensorProduct(tangentVector);
+			var tangentialPart1 = (A.Transpose() * t_x_n * A).Scale(coef1);
+			var tangentialPart2 = (dA.Transpose() * t_x_t * A).Scale(coef2);
+			var tangentialPart3 = (A.Transpose() * (t_x_n + n_x_t) * A).Scale(coef3);
+			var fullTangentialPart = tangentialPart1.Scale(-1d) + tangentialPart2 + tangentialPart2.Transpose() + tangentialPart3.Transpose();
+			return fullTangentialPart;
 		}
 
 		public IMatrix StiffnessMatrix()
@@ -774,10 +972,12 @@ namespace MGroup.FEM.Structural.Line
 					var da1Matrix = positionMatrices.Item2;
 					var da11Matrix = positionMatrices.Item3;
 					var masterSurfaceCharacteristics = MasterSegmentGeometry(da1Matrix, da11Matrix);
-					var m11 = masterSurfaceCharacteristics.Item2;
 					var dRho = masterSurfaceCharacteristics.Item1;
+					var m11 = masterSurfaceCharacteristics.Item2;
 					var n = masterSurfaceCharacteristics.Item3;
+					var t = masterSurfaceCharacteristics.Item4;
 					var h11 = masterSurfaceCharacteristics.Item5;
+					var detm = masterSurfaceCharacteristics.Item6;
 					var ksi3 = CalculatePenetration(aMatrix, n);
 					if (ksi3 <= 0)
 					{
@@ -786,8 +986,25 @@ namespace MGroup.FEM.Structural.Line
 						var rotationalPart = CalculateRotationalStiffnessPart(aMatrix, da1Matrix, n, ksi3, m11, dRho);
 						var curvaturePart = CalculateCurvatureStiffnessPart(aMatrix, ksi3, m11, dRho, h11);
 						var scalar = Math.Pow(slaveMetricTensor, 0.5) * gW;
-						var StifnessMatrixIntegrationPointContribution = (mainPart + rotationalPart + curvaturePart).Scale(scalar);
-						globalStifnessMatrix += StifnessMatrixIntegrationPointContribution;
+						var stifnessMatrixNormalPartIntegrationPointContribution = (mainPart + rotationalPart + curvaturePart).Scale(scalar);
+						globalStifnessMatrix += stifnessMatrixNormalPartIntegrationPointContribution;
+						var deltaKsi1 = ksi1 - IntegrationPointsStickingPoints[i + 1];
+						var trialTangentialTraction = IntegrationPointsTangentialTractions[i + 1] - detm * PenaltyFactorTangential * deltaKsi1;
+						var phiTr = Math.Pow(trialTangentialTraction * trialTangentialTraction * m11, 0.5) - StickingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+						if (phiTr <= 0)
+						{
+							//Sticking
+							var StifnessMatrixTangentialPart = CalculateTangentialStiffnessPartForSticking(Matrix.CreateFromArray(aMatrix), Matrix.CreateFromArray(da1Matrix),
+								trialTangentialTraction, n, t, detm, m11, h11).Scale(scalar);
+							globalStifnessMatrix += StifnessMatrixTangentialPart;
+						}
+						else
+						{
+							//Sliding
+							var StifnessMatrixTangentialPart = CalculateTangentialStiffnessPartForSliding(Matrix.CreateFromArray(aMatrix), Matrix.CreateFromArray(da1Matrix),
+								trialTangentialTraction, n, t, detm, m11, h11, ksi3).Scale(scalar);
+							globalStifnessMatrix += StifnessMatrixTangentialPart;
+						}
 					}
 				}
 			}
@@ -825,7 +1042,10 @@ namespace MGroup.FEM.Structural.Line
 					var da1Matrix = positionMatrices.Item2;
 					var da11Matrix = positionMatrices.Item3;
 					var surfaceCharacteristics = MasterSegmentGeometry(da1Matrix, da11Matrix);
+					var m11 = surfaceCharacteristics.Item2;
 					var n = surfaceCharacteristics.Item3;
+					var t = surfaceCharacteristics.Item4;
+					var detm = surfaceCharacteristics.Item6;
 					var ksi3 = CalculatePenetration(aMatrix, n);
 					if (ksi3 <= 0)
 					{
@@ -833,8 +1053,26 @@ namespace MGroup.FEM.Structural.Line
 						var scalar = Math.Pow(slaveMetricTensor, 0.5) * gW;
 						var AT = Matrix.CreateFromArray(aMatrix).Transpose();
 						var AT_n = AT.Multiply(n);
-						var internalForcesVectorGaussPoint = AT_n.Scale(penaltyFactor * ksi3 * scalar);
-						internalGlobalForcesVector = internalGlobalForcesVector.Add(internalForcesVectorGaussPoint);
+						var internalForcesVectorGaussPointNormalPart = AT_n.Scale(PenaltyFactorNormal * ksi3 * scalar);
+						internalGlobalForcesVector = internalGlobalForcesVector.Add(internalForcesVectorGaussPointNormalPart);
+						var deltaKsi1 = ksi1 - IntegrationPointsStickingPoints[i + 1];
+						var trialTangentialTraction = IntegrationPointsTangentialTractions[i + 1] - detm * PenaltyFactorTangential * deltaKsi1;
+						var phiTr = Math.Pow(trialTangentialTraction * trialTangentialTraction * m11, 0.5) - StickingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3);
+						if (phiTr <= 0)
+						{
+							//Sticking
+							var AT_t = AT.Multiply(t);
+							var internalTangentialForcesVectorGaussPoint = AT_t.Scale(trialTangentialTraction * Math.Pow(m11, 0.5) * scalar);
+							internalGlobalForcesVector = internalGlobalForcesVector.Add(internalTangentialForcesVectorGaussPoint);
+						}
+						else
+						{
+							//Sliding
+							var T1 = (trialTangentialTraction / Math.Abs(trialTangentialTraction)) * SlidingCoefficient * PenaltyFactorNormal * Math.Abs(ksi3) * Math.Pow(detm, 0.5);
+							var AT_t = AT.Multiply(t);
+							var internalTangentialForcesVectorGaussPoint = AT_t.Scale(T1 * Math.Pow(m11, 0.5) * scalar);
+							internalGlobalForcesVector = internalGlobalForcesVector.Add(internalTangentialForcesVectorGaussPoint);
+						}
 					}
 				}
 			}
